@@ -1,65 +1,68 @@
-# CodeInsight Project Guide
+# CodeInsight — Project Guide
 
-**Project name:** *Why The Code Is Like This*  
-**Innovation theme:** AI and Developer Tools  
-**Purpose of this document:** explain the current prototype, how its parts work together, how to run it, and what its output does and does not mean.
+**Project title:** Why The Code Is Like This  
+**Product name:** CodeInsight  
+**Theme:** AI and Developer Tools  
+**Purpose:** A practical guide to the prototype’s user flow, architecture, setup, API, and current limitations.
 
-## 1. Project overview
+## 1. Overview
 
-CodeInsight is a web prototype for exploring the history of a **public GitHub repository**. It imports a bounded set of recent commits, merged pull requests (PRs), and issues into Neo4j. A developer can search those records with a question, inspect matching source links, and view those matching records with their directly connected graph context.
+CodeInsight is a web prototype for exploring a bounded sample of the history of a public GitHub repository. It imports recent commits, merged pull requests (PRs), and issues into Neo4j. A developer can search those records with a question, inspect matching records and original GitHub links, then view the matching records and their direct graph connections.
 
-The starting idea was an AI assistant that explains why code decisions were made, initially framed around FastAPI. The implemented project is more limited and evidence-focused: it finds records whose text matches question keywords. It does not generate an LLM explanation or establish historical intent.
+The original project idea was to explain why code decisions were made. The current prototype is an evidence finder: it retrieves records using question keywords and displays their sources. It does **not** use an LLM to write an explanation, and a text match or graph relationship does not prove historical intent or causation.
 
-## 2. What a user can do
+## 2. User flow
+
+1. Open the Evidence Engine and enter a public GitHub URL or `owner/repo`, for example `encode/httpx`.
+2. The API validates the repository name and fetches a bounded set of public GitHub records.
+3. The importer stores repository entities and relationships in Neo4j.
+4. Ask a question using distinctive terms likely to occur in a commit, PR, or issue.
+5. Review the evidence cards and open GitHub source links to verify context.
+6. Open Graph Explorer in the same browser tab to see the latest search records and their direct connections.
 
 The frontend has three pages:
 
-- **Evidence Engine** (`prototype/frontend/index.html`): import a repository, ask a question, and inspect matching commits, PRs, and issues with GitHub links.
-- **Graph Explorer** (`prototype/frontend/graph.html`): view records from the latest Evidence Engine search and their direct repository/PR/commit/issue connections. Click a node to inspect its metadata and source link.
-- **Documentation** (`prototype/frontend/docs.html`): read the API reference and try supported requests. The health check confirms the FastAPI process responds; it does not check Neo4j.
+- **Evidence Engine:** `prototype/frontend/index.html` — imports repositories and searches evidence.
+- **Graph Explorer:** `prototype/frontend/graph.html` — displays search matches with directly connected records.
+- **Documentation:** `prototype/frontend/docs.html` — interactive reference for the API endpoints.
 
-The normal flow is:
-
-1. Enter a public GitHub URL or `owner/repo`, such as `encode/httpx`.
-2. The backend validates the repository and fetches recent public history.
-3. The importer stores normalized records and relationships in Neo4j.
-4. Ask a question with distinctive words likely to appear in the history.
-5. Review the returned records and open their GitHub sources to judge whether they support an answer.
-6. Open Graph Explorer in the same browser tab to see the search matches and their direct graph connections.
-
-## 3. How the system fits together
+## 3. Architecture
 
 ```mermaid
 flowchart LR
-    Browser[Evidence Engine / Graph Explorer / Docs]
-    API[FastAPI backend]
+    Browser[Evidence Engine / Graph Explorer / API Docs]
+    API[FastAPI]
     GH[GitHub REST API]
-    Import[Normalize and import]
+    Fetch[Fetch and normalize bounded history]
+    Import[Neo4j importer]
     DB[(Neo4j)]
-    Sources[GitHub source links]
-
     Browser -->|Import repository| API
     API --> GH
-    GH --> Import
+    GH --> Fetch
+    Fetch --> Import
     Import --> DB
     Browser -->|Ask question| API
-    API -->|Keyword search| DB
-    DB -->|Matching records| API
+    API -->|Keyword scoring and linked context| DB
+    DB --> API
     API --> Browser
-    Browser -->|Open source| Sources
-    Browser -->|Load repository graph| API
-    API --> DB
+    Browser -->|Open original record| GH
 ```
 
-### Repository import
+**Stack and role**
 
-`prototype/backend/main.py` accepts an HTTPS GitHub repository URL or an `owner/repo` slug. It runs `fetch_github_data.py`, which calls GitHub’s REST API and creates normalized JSON in a temporary directory. The API then imports that data into Neo4j through `import_sample.py`; the temporary JSON file is not the persistent store.
+| Layer | Technology | Role |
+| --- | --- | --- |
+| Frontend | HTML, CSS, vanilla JavaScript | Evidence Engine, graph view, and API reference |
+| Backend | Python, FastAPI, Uvicorn | HTTP API, input validation, and import coordination |
+| Source data | GitHub REST API | Public repository commits, merged PRs, issues, and selected commit file paths |
+| Graph store | Neo4j, Cypher | Stores normalized entities and their relationships |
+| Retrieval | Deterministic keyword extraction and weighted matching | Finds records whose stored text overlaps with the question |
 
-The endpoint requests up to 20 recent commits, 10 merged PRs, and 15 issues. It also fetches commit details for up to 8 commits and up to 5 additional issues linked from PR closing text. GitHub may return fewer. Commits attached to the fetched PRs are included too, so the total commit count can exceed 20; the `encode/httpx` demonstration imported 36 commits.
+The active question endpoint does not call an LLM. Some LLM-related packages remain in `requirements.txt`, but their presence does not mean the current question path uses a model.
 
-Commit, PR, and issue text is bounded during ingestion. Stable IDs preserve repository ownership, and source URLs are retained so users can inspect original records.
+## 4. Import behavior and graph model
 
-### Graph model
+The import endpoint requests up to **20 commits, 10 merged PRs, and 15 issues**. It also requests detailed changed-file metadata for up to 8 commits and can fetch up to 5 extra issues linked by PR closing text. GitHub may return fewer records. Commits attached to fetched PRs are also imported, so the final commit count can exceed 20; the documented `encode/httpx` run imported 36 commits.
 
 The importer creates these node types:
 
@@ -70,67 +73,79 @@ The importer creates these node types:
 - `Developer`
 - `File`
 
-It creates relationships such as:
+Relationships include:
 
-- `Repository -[:HAS_COMMIT]-> Commit`
-- `Repository -[:HAS_PULL_REQUEST]-> PullRequest`
-- `Repository -[:HAS_ISSUE]-> Issue`
-- `PullRequest -[:INCLUDES_COMMIT]-> Commit`
-- `PullRequest -[:REFERENCES_ISSUE]-> Issue`
-- `Commit -[:CHANGED]-> File`
-- `Commit -[:AUTHORED_BY]-> Developer`
+| Relationship | Meaning |
+| --- | --- |
+| `Repository -[:HAS_COMMIT]-> Commit` | The repository contains the commit |
+| `Repository -[:HAS_PULL_REQUEST]-> PullRequest` | The repository contains the PR |
+| `Repository -[:HAS_ISSUE]-> Issue` | The repository contains the issue |
+| `PullRequest -[:INCLUDES_COMMIT]-> Commit` | The PR includes the commit |
+| `PullRequest -[:REFERENCES_ISSUE]-> Issue` | The PR references or closes the issue |
+| `Commit -[:CHANGED]-> File` | The commit changed the file |
+| `Commit -[:AUTHORED_BY]-> Developer` | The developer authored the commit |
 
-Repository-scoped IDs look like `owner/repo`, `owner/repo@<commit-sha>`, `owner/repo#<number>`, and `owner/repo:<file-path>`. These IDs let the graph endpoint select one repository rather than finding unrelated records by matching words in their titles.
+Stable IDs preserve repository scope: `owner/repo`, `owner/repo@<commit-sha>`, `owner/repo#<number>`, `github:<login>`, and `owner/repo:<file-path>`.
 
-Neo4j data is persistent. Repeated imports use stable IDs and `MERGE`, which reuses matching nodes and relationships and updates imported properties. Imports do not automatically delete older records that were not present in a later bounded fetch. The graph remains in Neo4j until that database data is cleared.
+Imports use Neo4j `MERGE` with these IDs, so repeated imports reuse matching entities and relationships. A later bounded import does not automatically delete older records that were already stored. Neo4j remains the persistent store; the temporary JSON generated during an API import is removed after the request completes.
 
-### Question retrieval
+## 5. Question retrieval and evidence meaning
 
-`prototype/backend/rag_pipeline.py` lowercases a question, extracts words, removes common and low-information terms, and searches the text of `Commit`, `PullRequest`, and `Issue` nodes. Title and commit-message matches receive more weight than description/body matches. It returns up to 10 direct text matches. When a direct match is an issue with imported `REFERENCES_ISSUE` relationships, the API can add up to 10 linked PR/commit context records and labels them separately from direct matches. This is a narrow relationship-based expansion: it cannot find a PR or commit that was not imported or linked to the matched issue.
+The retrieval code extracts distinct words from the question, removes common or low-information terms, and scores text on `Commit`, `PullRequest`, and `Issue` nodes:
 
-The Evidence Engine sends the most recently imported repository along with the question. The API can also be called without a repository field, in which case it searches all imported repositories. Evidence cards show stable record IDs and whether a record matched the words directly or was linked to a matching issue. A linked record is useful context, but neither a text match nor a graph relationship proves why a change was made.
+- A keyword in a title or commit message receives more weight.
+- A keyword in summary or description receives a lower weight.
+- A keyword in the body receives the least weight.
+- The API returns up to 10 direct matches, ordered by score and date.
 
-No LLM is called in the active question path. LLM-related packages in `requirements.txt` do not mean runtime questions use a language model.
+When one of those direct matches is an issue, the system may add up to 10 PR or commit records connected through `REFERENCES_ISSUE` and `INCLUDES_COMMIT`. The UI labels those records as **linked context**, separately from **direct text matches**. This relationship-based expansion only works when the relevant records and links were imported.
 
-## 4. How to understand the graph
+A result means that stored text matched question terms or that a stored graph relationship connects it to a direct match. It is a lead for investigation, not an explanation or proof. Always open the source record and read its surrounding discussion before drawing a conclusion.
 
-**Graph Explorer is focused on the latest Evidence Engine search.** It displays the matching records, plus nodes directly connected to them, such as the repository, a related PR, a referenced issue, a PR commit, a changed file, or an author. It does not draw unrelated portions of repository history. Evidence cards show stable IDs so a result such as `owner/repo#123` can be matched to `Issue #123` in the graph. A commit visible in the repository graph is not automatically relevant to the current question; it is query evidence only if it appears as a direct match or is linked to a matched issue through an imported PR relationship.
+## 6. Graph Explorer
 
-The API returns at most 150 relationships and prioritizes the IDs from the latest search. The visualizer keeps direct connections to those matches and arranges node types in columns. Arrows show relationship direction; hover over an edge for its meaning. Click a node to see its stable ID, full text, and source link. Open Graph Explorer in the same browser tab after asking a question so it can use that search’s saved results. If no question result is available in the tab, the page asks you to run a query first.
+Graph Explorer is intended to show the latest Evidence Engine matches plus their direct connections, such as the repository, a related PR, an issue, a commit, a changed file, or an author. It does not show the entire repository history.
 
-## 5. API reference
+The page reads the latest query from the same tab’s browser session storage and the selected repository from local storage. Run the search first, then open Graph Explorer in the same tab. The API may return up to 150 relationships; the visualizer shows at most 60 focused edges and 36 nodes. It groups node types into columns, labels relationship directions with arrows, and lets you click a node to inspect its ID and source link.
 
-The backend exposes these main endpoints:
+A commit can appear in the graph as connected repository history even if it was not a direct text match. Check its graph edge and the evidence card’s match label to understand why it is shown.
+
+## 7. API reference
 
 | Method and path | Purpose |
 | --- | --- |
-| `GET /` | Confirms the API responds. |
-| `GET /health` | Confirms FastAPI is running; does not verify Neo4j. |
-| `POST /api/repositories` | Fetches and imports bounded public repository history. |
-| `POST /api/ask` | Returns up to 10 direct keyword matches and up to 10 linked PR/commit context records. Accepts `question` and optional `repository`. |
-| `GET /api/graph?q=owner%2Frepo&focus=owner%2Frepo%23123` | Returns up to 150 relationships and their endpoint nodes, scoped to one repository when `q` is provided and prioritizing the latest query’s evidence IDs in `focus`. |
+| `GET /` | Confirms the API root responds. |
+| `GET /health` | Confirms the FastAPI process responds; it does not check Neo4j. |
+| `POST /api/repositories` | Fetches bounded GitHub history and imports it into Neo4j. Body: `{"repository":"owner/repo"}`. |
+| `POST /api/ask` | Searches imported records. Body: `{"question":"...","repository":"owner/repo"}`. The repository field is optional; omitting it searches all imported repositories. |
+| `GET /api/graph?q=owner%2Frepo&focus=owner%2Frepo%23123` | Retrieves repository graph relationships and prioritizes relationships touching the comma-separated focus record IDs. |
 
-The API reference page has sample requests and responses. They are examples, not live query results.
+The Documentation page has example requests and interactive controls. Example responses there are illustrative; record counts depend on the repository and GitHub’s API results.
 
-## 6. Run the project locally
+## 8. Run locally
 
-Requirements: Python 3.10 or newer, installed backend requirements, and a reachable Neo4j database with credentials.
+### Requirements
+
+- Python 3.10 or newer
+- A reachable Neo4j database and valid credentials
+- Network access to GitHub for repository import
+- PowerShell commands below assume Windows
 
 ### Configure Neo4j
 
-Create `prototype/backend/.env` with your own values:
+Create `prototype/backend/.env` with your own database credentials:
 
-```text
+```dotenv
 NEO4J_URI=neo4j+s://your-instance.databases.neo4j.io
 NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=your-password
 ```
 
-`GITHUB_TOKEN` is optional for public repositories. It may help if GitHub rate-limits unauthenticated requests. Keep `.env` private and out of Git. Run `prototype/backend/schema.cypher` in Neo4j Browser once to create uniqueness constraints.
+The GitHub token is optional for public repositories. If GitHub rate-limits unauthenticated requests, add `GITHUB_TOKEN=your-token` to the same private `.env` file. Never commit that file or share its values. Run the contents of `prototype/backend/schema.cypher` once in Neo4j Browser to create uniqueness constraints.
 
 ### Start the backend
 
-From the project root, in a PowerShell terminal:
+From the project root:
 
 ```powershell
 cd prototype\backend
@@ -140,66 +155,76 @@ python -m pip install -r requirements.txt
 python -m uvicorn main:app --reload --port 8000
 ```
 
-Keep this terminal running. Check `http://127.0.0.1:8000/health` for `{"status":"healthy"}`. That confirms the API process, not the database connection.
+Keep the terminal open. Visit [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health). A `{"status":"healthy"}` response confirms the API process is responding, not that Neo4j is reachable.
 
 ### Start the frontend
 
-In a second terminal, from the project root:
+Open a second terminal from the project root:
 
 ```powershell
 cd prototype\frontend
 python -m http.server 5500
 ```
 
-Open `http://127.0.0.1:5500/index.html`. On `localhost` or `127.0.0.1`, the Evidence Engine and Graph Explorer select the local API at port 8000. On the hosted site, they select the Render backend. The local API allows the frontend origins on port 5500.
+Open [http://127.0.0.1:5500/index.html](http://127.0.0.1:5500/index.html). When served from `localhost` or `127.0.0.1`, the frontend uses the API at `http://127.0.0.1:8000`. The browser pages need to be served over HTTP; opening the HTML files directly from disk can cause browser request restrictions.
 
-If importing or graph loading fails, check the backend terminal output, the `/health` endpoint, and the Neo4j `.env` settings. A healthy response alone does not establish a working Neo4j connection.
+## 9. Hosted deployment
 
-## 7. Hosted deployment
+The project currently points to these Render services:
 
-The project uses two Render services:
+- Frontend: [https://cohort-do0y.onrender.com](https://cohort-do0y.onrender.com)
+- Backend API: [https://repoinsight-qjj0.onrender.com](https://repoinsight-qjj0.onrender.com)
 
-- Frontend: [cohort-do0y.onrender.com](https://cohort-do0y.onrender.com)
-- Backend: [repoinsight-qjj0.onrender.com](https://repoinsight-qjj0.onrender.com)
+The backend service needs `NEO4J_URI`, `NEO4J_USERNAME`, and `NEO4J_PASSWORD` configured in its Render environment. `GITHUB_TOKEN` is optional. After pushing a change, wait for the corresponding deployment to complete before checking the hosted app. A free Render service may take longer to respond after inactivity.
 
-The frontend selects the Render API when served from the hosted domain. The backend needs Neo4j credentials configured in its Render environment. The public GitHub token is optional. With auto-deploy enabled, pushing changes to the connected GitHub branch triggers a Render deployment; confirm the deployment finishes successfully before checking the hosted app.
+## 10. Troubleshooting
 
-## 8. What has been demonstrated
+| Symptom | What to check |
+| --- | --- |
+| `No module named uvicorn` | Activate the project virtual environment and run `python -m pip install -r requirements.txt` from `prototype/backend`. Start it with `python -m uvicorn main:app --reload --port 8000`. |
+| `Could not add repository: Failed to fetch` | Confirm FastAPI is running, open the frontend through its HTTP server, and check the browser console/backend terminal for the network or CORS error. |
+| `Could not save repository data to Neo4j` | Confirm the Neo4j service is running, the URI hostname is copied correctly, DNS/network access works, credentials are current, and the database permits your connection. A hostname-resolution error points to the URI or network/DNS path, not GitHub ingestion. |
+| `/health` says healthy but import or search fails | The health endpoint checks only the FastAPI process. Verify Neo4j configuration and connectivity separately. |
+| Import returns 502 or GitHub rate-limit text | Check the repository spelling and public visibility, wait for the GitHub limit to reset, or configure an optional GitHub token. |
+| Import succeeds but a question finds no evidence | Use distinctive words that appear in an imported title, commit message, or issue/PR body; the import is only a bounded sample. |
+| Graph says no saved search or shows no matching IDs | Run a question in Evidence Engine and open Graph Explorer in the same tab; make sure the selected repository is the one imported. |
+| Results contain irrelevant records | Keyword matching may return noise. Open each source link and assess it manually; retrieval accuracy has not been established systematically. |
 
-The Build Log records a manual `encode/httpx` demonstration dated 2026-10-03:
+## 11. Demonstrated behavior and evaluation status
 
-- Import: 36 commits, 10 merged PRs, and 15 issues.
-- Question: “What changed to support chardet 6.0?”
-- Retrieval: 10 records, including relevant records and noise.
-- Source check: one linked commit was opened and verified; it changed a response-decoding test to accept `ISO-8859-1` or `WINDOWS-1252`.
-- One query run took 4.56 seconds; this is not a comparison with manual search.
+The Build Log records one manual `encode/httpx` demonstration on 2026-10-03. It imported 36 commits, 10 merged PRs, and 15 issues, then searched for “What changed to support chardet 6.0?” The observed results included relevant history and unrelated records. One linked commit was opened and checked; its test accepted both `ISO-8859-1` and `WINDOWS-1252` encodings. The reported query time was 4.56 seconds for that run only; it is not evidence that the prototype is faster than manual GitHub search.
 
-The Build Log also documents two exploratory student sessions. One participant found the graph useful but assumed it covered all repository history; the other noticed irrelevant retrieval results. These small sessions do not establish general usability or retrieval accuracy.
+The Build Log also records two exploratory stranger-test sessions. These sessions are early observations, not proof of general usability. Systematic retrieval tests, a timed comparison with GitHub search, and broad user validation remain future work. Opportunity sizing and adoption rates in the Build Summary are explicitly assumptions; willingness to pay has not been established.
 
-The product hypothesis is that source-linked keyword results can help a developer find useful repository history faster than manual GitHub search; no timed comparison has established that. The intended user is a developer or open-source contributor investigating an unfamiliar public repository. Current substitutes include GitHub search, commit and PR pages, `git log`, `git blame`, and asking a maintainer. The Build Summary records a first-pass opportunity scenario using GitHub’s reported 180M+ developers, with assumed 1% fit and 0.1% reachable/adoptable rates: 1.8M possible-fit users and 1,800 early users. Those rates are assumptions, not measured demand; no revenue estimate is claimed.
+## 12. Limitations and next steps
 
-## 9. Limits and next work
+- Supports public repositories only; it does not clone or index complete repository history.
+- Import depth is bounded and may omit relevant older or unlinked context.
+- GitHub rate limits, missing metadata, network failures, or Neo4j availability affect results.
+- Keyword matching can miss relevant history and return false positives.
+- Linked context depends on explicit imported PR-to-issue and PR-to-commit relationships.
+- Search results and graph links do not establish original intent or causation.
+- The current question path does not generate an LLM-written explanation.
+- Faster research, accuracy, and general usefulness need further evaluation.
 
-- Only public GitHub repositories are accepted; imports are bounded, not complete clones.
-- The GitHub API can return fewer records, and unauthenticated requests can be rate-limited.
-- Keyword matching can miss useful history and return unrelated matches.
-- The graph API is capped at 150 relationships; Graph Explorer shows the latest query matches and their direct connections only.
-- A graph relationship or keyword match does not prove a historical reason or causal connection.
-- Manual source review is required. The project has not established that it is faster than GitHub search or that it improves outcomes for developers generally.
-- Most failure cases in the Build Log test plan remain untested. Broader technical checks, stranger tests, and a timed comparison with manual GitHub search are the next evaluation steps.
+A sensible next step is to compare a fixed set of questions against manual GitHub search, record relevant and irrelevant matches, and improve retrieval only after reviewing those examples.
 
-The Build Log and Build Summary preserve the assessment process and evidence position. This guide explains the current working prototype and is supplementary to those submission documents.
+## 13. Source map
 
-## 10. Source file map
-
-- `prototype/frontend/index.html`, `prototype/frontend/app.js`, `prototype/frontend/styles.css` — Evidence Engine and shared interaction styling.
-- `prototype/frontend/graph.html` — query-focused graph selection, relationship colors, arrows, and node details.
-- `prototype/frontend/docs.html` — interactive API reference page.
-- `prototype/backend/main.py` — FastAPI routes, request validation, import orchestration, and graph API.
-- `prototype/backend/fetch_github_data.py` — bounded GitHub REST API retrieval and normalization.
+- `README.md` — repository landing page and navigation to project materials.
+- `PROJECT_GUIDE.md` — this detailed product and engineering guide.
+- `Build-Log/Build-Log.md` — six assessment entries and supporting screenshots.
+- `Build-Summary.md` — concise project summary.
+- `prototype/README.md` — quick setup instructions for the prototype.
+- `prototype/backend/main.py` — FastAPI routes, input validation, import limits, and graph endpoint.
+- `prototype/backend/fetch_github_data.py` — GitHub REST API retrieval and normalization.
 - `prototype/backend/import_sample.py` — Neo4j node and relationship import.
-- `prototype/backend/rag_pipeline.py` — keyword extraction and evidence retrieval.
-- `prototype/backend/schema.cypher` — uniqueness constraints.
-- `prototype/backend/graph_retrieval.cypher` — a sample Cypher query for the bundled `pallets/click` data.
-- `prototype/backend/INGESTION_CONTRACT.md` — normalized data fields and stable ID rules.
-- `prototype/backend/data/pallets_click_final.json` — bundled normalized sample dataset for `pallets/click`; it is not the temporary JSON created for each API import.
+- `prototype/backend/rag_pipeline.py` — keyword extraction, scoring, and linked evidence retrieval.
+- `prototype/backend/schema.cypher` — Neo4j uniqueness constraints.
+- `prototype/backend/graph_retrieval.cypher` — example graph query for the bundled sample.
+- `prototype/backend/INGESTION_CONTRACT.md` — normalized data fields and stable ID contract.
+- `prototype/backend/data/pallets_click_final.json` — bundled normalized `pallets/click` sample data.
+- `prototype/frontend/index.html`, `app.js`, `styles.css` — Evidence Engine.
+- `prototype/frontend/graph.html` — Graph Explorer.
+- `prototype/frontend/docs.html` — interactive API documentation.
+
